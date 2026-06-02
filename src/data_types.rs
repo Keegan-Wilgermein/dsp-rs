@@ -28,6 +28,13 @@ pub enum FIRFilterMode {
     Custom,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub enum CombMode {
+    #[default]
+    Feedforward,
+    Feedback,
+}
+
 pub enum WindowFunction {
     Rectangular,
     Hann,

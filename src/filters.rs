@@ -1,8 +1,8 @@
 //! Filters
 
 // ---- Imports ------------
-use std::{f64::consts::PI, ops::{Add, Div, Mul, Sub}};
-use crate::data_types::{BiquadFilterMode, FIRFilterMode, SlidingWindow, SvfOutput, WindowFunction};
+use std::{f64::consts::PI, ops::{Add, Div, Mul, Sub}, time::Duration};
+use crate::data_types::{BiquadFilterMode, CombMode, FIRFilterMode, SlidingWindow, SvfOutput, WindowFunction};
 
 // ---- Structs -------------
 #[derive(Debug, Clone)]
@@ -804,9 +804,6 @@ pub struct StateVariableFilter<T> {
     frequency_coefficient: T,
     /// `1.0 / q` — recomputed on `update`
     damping: T,
-    // Stored parameters (for getters)
-    cutoff: T,
-    q: T,
 }
 
 impl<T> Default for StateVariableFilter<T>
@@ -820,8 +817,6 @@ where
             band: T::default(),
             frequency_coefficient: T::default(),
             damping: T::default(),
-            cutoff: T::default(),
-            q: T::default(),
         }
     }
 }
@@ -846,8 +841,6 @@ where
             band: T::default(),
             frequency_coefficient: Self::compute_frequency_coefficient(cutoff, sample_rate).into(),
             damping: (1.0 / q).into(),
-            cutoff: cutoff.into(),
-            q: q.into(),
         }
     }
 
@@ -867,16 +860,6 @@ where
         self.band
     }
 
-    /// Gets the current cutoff frequency
-    pub fn get_cutoff(&self) -> T {
-        self.cutoff
-    }
-
-    /// Gets the current Q
-    pub fn get_q(&self) -> T {
-        self.q
-    }
-
     // Setters
     /// Updates the cutoff frequency and Q, recomputing internal coefficients
     pub fn update<V>(&mut self, cutoff: V, q: V, sample_rate: V)
@@ -889,8 +872,6 @@ where
 
         self.frequency_coefficient = Self::compute_frequency_coefficient(cutoff, sample_rate).into();
         self.damping = (1.0 / q).into();
-        self.cutoff = cutoff.into();
-        self.q = q.into();
     }
 
     // Application
@@ -931,6 +912,120 @@ where
     // Helper functions
     fn compute_frequency_coefficient(cutoff: f64, sample_rate: f64) -> f64 {
         2.0 * (PI * cutoff / sample_rate).sin()
+    }
+}
+
+// ---- Comb Filter ------
+#[derive(Debug, Clone)]
+/// # CombFilter
+/// Mixes a signal with a delayed copy of itself, creating evenly spaced peaks and notches
+///
+/// - `Feedforward` — input mixed with delayed input (sharper notches)
+/// - `Feedback` — input mixed with delayed output (resonant, ringing peaks)
+pub struct CombFilter<T> {
+    buffer: Vec<T>,
+    write_head: usize,
+    delay_samples: usize,
+    gain: T,
+    mode: CombMode,
+}
+
+impl<T> CombFilter<T>
+where
+    T: Copy + Default + Add<Output = T> + Mul<Output = T>,
+    f64: Into<T>,
+{
+    /// Creates a new `CombFilter` with the given delay in samples and gain
+    pub fn new<V>(delay_samples: usize, gain: V, mode: CombMode) -> Self
+    where
+        V: Into<f64>,
+    {
+        let delay_samples = delay_samples.max(1);
+        Self {
+            buffer: vec![T::default(); delay_samples],
+            write_head: 0,
+            delay_samples,
+            gain: gain.into().into(),
+            mode,
+        }
+    }
+
+    /// Creates a new `CombFilter`, converting a `Duration` delay to samples internally
+    pub fn new_from_duration<V>(delay: Duration, sample_rate: V, gain: V, mode: CombMode) -> Self
+    where
+        V: Into<f64>,
+    {
+        let delay_samples = (delay.as_secs_f64() * sample_rate.into()) as usize;
+        Self::new(delay_samples, gain.into(), mode)
+    }
+
+    // Getters
+    /// Gets the current delay length in samples
+    pub fn get_delay_samples(&self) -> usize {
+        self.delay_samples
+    }
+
+    /// Gets the current comb mode
+    pub fn get_mode(&self) -> CombMode {
+        self.mode
+    }
+
+    /// Gets a reference to the internal delay buffer
+    pub fn get_buffer(&self) -> &[T] {
+        &self.buffer
+    }
+
+    // Setters
+    /// Sets a new delay length in samples, clearing the buffer
+    pub fn update(&mut self, delay_samples: usize) {
+        let delay_samples = delay_samples.max(1);
+        self.buffer = vec![T::default(); delay_samples];
+        self.write_head = 0;
+        self.delay_samples = delay_samples;
+    }
+
+    /// Sets a new delay length from a `Duration`, clearing the buffer
+    pub fn update_from_duration<V>(&mut self, delay: Duration, sample_rate: V)
+    where
+        V: Into<f64>,
+    {
+        let delay_samples = (delay.as_secs_f64() * sample_rate.into()) as usize;
+        self.update(delay_samples);
+    }
+
+    /// Updates the gain
+    pub fn update_gain<V>(&mut self, gain: V)
+    where
+        V: Into<f64>,
+    {
+        self.gain = gain.into().into();
+    }
+
+    // Application
+    /// Processes a single sample in place
+    pub fn process(&mut self, sample: &mut T) {
+        let delayed = self.buffer[self.write_head];
+
+        match self.mode {
+            CombMode::Feedforward => {
+                self.buffer[self.write_head] = *sample;
+                *sample = *sample + self.gain * delayed;
+            }
+            CombMode::Feedback => {
+                let output = *sample + self.gain * delayed;
+                self.buffer[self.write_head] = output;
+                *sample = output;
+            }
+        }
+
+        self.write_head = (self.write_head + 1) % self.delay_samples;
+    }
+
+    /// Processes a slice of samples in place
+    pub fn batch_process(&mut self, samples: &mut [T]) {
+        for sample in samples {
+            self.process(sample);
+        }
     }
 }
 
