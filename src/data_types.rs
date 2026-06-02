@@ -35,6 +35,13 @@ pub enum CombMode {
     Feedback,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub enum ChebyshevType {
+    #[default]
+    TypeI,
+    TypeII,
+}
+
 pub enum WindowFunction {
     Rectangular,
     Hann,
@@ -166,6 +173,9 @@ impl<T> SlidingWindow<T> {
         self.head.increment_head(1);
     }
 
+    pub fn capacity(&self) -> usize {
+        self.head.size
+    }
 
     pub fn len(&self) -> usize {
         self.buffer.len()
