@@ -1,16 +1,90 @@
 //! Data types
 
-use std::ops::{Index};
+use std::{f64::consts::PI, ops::Index};
 
 // ---- Enums ------------
+#[derive(Debug, Clone, Copy, Default)]
+pub enum BiquadFilterMode {
+    Lowpass,
+    Highpass,
+    Bandpass,
+    Notch,
+    Bell,
+    Lowshelf,
+    Highshelf,
+    #[default]
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub enum FIRFilterMode {
-    LowPass {cutoff: f64, sample_rate: f64},
+    Lowpass {cutoff: f64, sample_rate: f64},
     Highpass { cutoff: f64, sample_rate: f64 },
     Bandpass { low_cutoff: f64, high_cutoff: f64, sample_rate: f64 },
     Notch { cutoff: f64, sample_rate: f64 },
     Hilbert,
     Differentiator,
-    Raw,
+    #[default]
+    Custom,
+}
+
+pub enum WindowFunction {
+    Rectangular,
+    Hann,
+    Hamming,
+    Blackman,
+    BlackmanHarris,
+    FlatTop,
+}
+
+impl WindowFunction {
+    pub fn apply(&self, length: usize, index: usize) -> f64 {
+        match self {
+            WindowFunction::Rectangular => 1.0,
+            WindowFunction::Hann => Self::hann(length, index),
+            WindowFunction::Hamming => Self::hamming(length, index),
+            WindowFunction::Blackman => Self::blackman(length, index),
+            WindowFunction::BlackmanHarris => Self::blackman_harris(length, index),
+            WindowFunction::FlatTop => Self::flat_top(length, index),
+        }
+    }
+
+    fn hann(length: usize, index: usize) -> f64 {
+        let denominator = length as f64 - 1.0;
+        let numerator = 2.0 * PI * index as f64;
+
+        0.5 * (1.0 - (numerator / denominator).cos())
+    }
+
+    fn hamming(length: usize, index: usize) -> f64 {
+        let denominator = length as f64 - 1.0;
+        let numerator = 2.0 * PI * index as f64;
+        let cosine = (numerator / denominator).cos();
+
+        0.54 - 0.46 * cosine
+    }
+
+    fn blackman(length: usize, index: usize) -> f64 {
+        let denominator = length as f64 - 1.0;
+        let t = 2.0 * PI * index as f64 / denominator;
+
+        0.42 - 0.5 * t.cos() + 0.08 * (2.0 * t).cos()
+    }
+
+    fn blackman_harris(length: usize, index: usize) -> f64 {
+        let denominator = length as f64 - 1.0;
+        let t = 2.0 * PI * index as f64 / denominator;
+
+        0.35875 - 0.48829 * t.cos() + 0.14128 * (2.0 * t).cos() - 0.01168 * (3.0 * t).cos()
+    }
+
+    fn flat_top(length: usize, index: usize) -> f64 {
+        let denominator = length as f64 - 1.0;
+        let t = 2.0 * PI * index as f64 / denominator;
+
+        0.21557895 - 0.41663158 * t.cos() + 0.27726316 * (2.0 * t).cos()
+            - 0.08357895 * (3.0 * t).cos() + 0.00694737 * (4.0 * t).cos()
+    }
 }
 
 // ---- Structs ------------
@@ -34,8 +108,6 @@ impl SlidingHead {
             self.position = (self.position + amount) % self.size;
         }
     }
-
-
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +130,6 @@ impl<T> Index<usize> for SlidingWindow<T> {
             &self.buffer[index]
         }
     }
-
 }
 
 impl<T> SlidingWindow<T> {
@@ -83,6 +154,11 @@ impl<T> SlidingWindow<T> {
 
     pub fn len(&self) -> usize {
         self.buffer.len()
+    }
+
+    pub fn as_slices(&self) -> (&[T], &[T]) {
+        let (left, right) = self.buffer.split_at(self.head.position);
+        (left, right)
     }
 }
 
