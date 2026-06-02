@@ -88,6 +88,14 @@ impl WindowFunction {
 }
 
 // ---- Structs ------------
+#[derive(Debug, Clone, Copy)]
+/// Output from a single `StateVariableFilter` pass — all three responses at once
+pub struct SvfOutput<T> {
+    pub low: T,
+    pub high: T,
+    pub band: T,
+}
+
 #[derive(Debug, Clone)]
 struct SlidingHead {
     size: usize,

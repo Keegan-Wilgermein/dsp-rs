@@ -2,7 +2,7 @@
 
 // ---- Imports ------------
 use std::{f64::consts::PI, ops::{Add, Div, Mul, Sub}};
-use crate::data_types::{BiquadFilterMode, FIRFilterMode, SlidingWindow, WindowFunction};
+use crate::data_types::{BiquadFilterMode, FIRFilterMode, SlidingWindow, SvfOutput, WindowFunction};
 
 // ---- Structs -------------
 #[derive(Debug, Clone)]
@@ -704,6 +704,233 @@ where
             (2.0 * PI * normalized_cutoff * offset_from_center).sin() / (PI * offset_from_center)
         };
         tap_value * window.apply(num_taps, tap_index)
+    }
+}
+
+// ---- Allpass Filter ------
+#[derive(Debug, Clone)]
+/// # AllpassFilter
+/// A first-order allpass filter
+///
+/// Passes all frequencies at equal volume but shifts their phase by varying amounts
+/// depending on frequency. Used as a building block for reverb diffusion and phasers.
+pub struct AllpassFilter<T> {
+    /// Phase-shift coefficient, should stay between -1.0 and 1.0
+    coefficient: T,
+    /// Internal delay state
+    z1: T,
+}
+
+impl<T> Default for AllpassFilter<T>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self {
+            coefficient: T::default(),
+            z1: T::default(),
+        }
+    }
+}
+
+impl<T> AllpassFilter<T>
+where
+    T: Copy + Default + Add<Output = T> + Sub<Output = T> + Mul<Output = T>,
+    f64: Into<T>,
+{
+    /// Creates a new `AllpassFilter` with the given coefficient
+    pub fn new<V>(coefficient: V) -> Self
+    where
+        V: Into<f64>,
+    {
+        let coefficient: f64 = coefficient.into();
+        Self {
+            coefficient: coefficient.into(),
+            z1: T::default(),
+        }
+    }
+
+    // Getters
+    /// Gets the current phase-shift coefficient
+    pub fn get_coefficient(&self) -> T {
+        self.coefficient
+    }
+
+    /// Gets the current internal delay state
+    pub fn get_z1(&self) -> T {
+        self.z1
+    }
+
+    // Setters
+    /// Updates the phase-shift coefficient
+    pub fn update<V>(&mut self, coefficient: V)
+    where
+        V: Into<f64>,
+    {
+        let coefficient: f64 = coefficient.into();
+        self.coefficient = coefficient.into();
+    }
+
+    // Application
+    /// Processes a single sample in place
+    pub fn process(&mut self, sample: &mut T) {
+        let w = *sample + self.coefficient * self.z1;
+        *sample = self.z1 - self.coefficient * w;
+        self.z1 = w;
+    }
+
+    /// Processes a slice of samples in place
+    pub fn batch_process(&mut self, samples: &mut [T]) {
+        for sample in samples {
+            self.process(sample);
+        }
+    }
+}
+
+// ---- State Variable Filter ------
+#[derive(Debug, Clone)]
+/// # StateVariableFilter
+/// A single-pass filter that outputs lowpass, highpass, and bandpass simultaneously
+///
+/// More efficient than running three separate filters when multiple responses are needed
+/// from the same signal.
+pub struct StateVariableFilter<T> {
+    // State variables
+    low: T,
+    high: T,
+    band: T,
+    // Precomputed coefficients
+    /// `2 * sin(π * cutoff / sample_rate)` — recomputed on `update`
+    frequency_coefficient: T,
+    /// `1.0 / q` — recomputed on `update`
+    damping: T,
+    // Stored parameters (for getters)
+    cutoff: T,
+    q: T,
+}
+
+impl<T> Default for StateVariableFilter<T>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self {
+            low: T::default(),
+            high: T::default(),
+            band: T::default(),
+            frequency_coefficient: T::default(),
+            damping: T::default(),
+            cutoff: T::default(),
+            q: T::default(),
+        }
+    }
+}
+
+impl<T> StateVariableFilter<T>
+where
+    T: Copy + Default + Add<Output = T> + Sub<Output = T> + Mul<Output = T>,
+    f64: Into<T>,
+{
+    /// Creates a new `StateVariableFilter` with the given cutoff, Q, and sample rate
+    pub fn new<V>(cutoff: V, q: V, sample_rate: V) -> Self
+    where
+        V: Into<f64>,
+    {
+        let cutoff: f64 = cutoff.into();
+        let q: f64 = q.into();
+        let sample_rate: f64 = sample_rate.into();
+
+        Self {
+            low: T::default(),
+            high: T::default(),
+            band: T::default(),
+            frequency_coefficient: Self::compute_frequency_coefficient(cutoff, sample_rate).into(),
+            damping: (1.0 / q).into(),
+            cutoff: cutoff.into(),
+            q: q.into(),
+        }
+    }
+
+    // Getters
+    /// Gets the last computed lowpass output
+    pub fn get_low(&self) -> T {
+        self.low
+    }
+
+    /// Gets the last computed highpass output
+    pub fn get_high(&self) -> T {
+        self.high
+    }
+
+    /// Gets the last computed bandpass output
+    pub fn get_band(&self) -> T {
+        self.band
+    }
+
+    /// Gets the current cutoff frequency
+    pub fn get_cutoff(&self) -> T {
+        self.cutoff
+    }
+
+    /// Gets the current Q
+    pub fn get_q(&self) -> T {
+        self.q
+    }
+
+    // Setters
+    /// Updates the cutoff frequency and Q, recomputing internal coefficients
+    pub fn update<V>(&mut self, cutoff: V, q: V, sample_rate: V)
+    where
+        V: Into<f64>,
+    {
+        let cutoff: f64 = cutoff.into();
+        let q: f64 = q.into();
+        let sample_rate: f64 = sample_rate.into();
+
+        self.frequency_coefficient = Self::compute_frequency_coefficient(cutoff, sample_rate).into();
+        self.damping = (1.0 / q).into();
+        self.cutoff = cutoff.into();
+        self.q = q.into();
+    }
+
+    // Application
+    /// Processes a single sample, returning all three filter outputs simultaneously
+    pub fn process(&mut self, sample: T) -> SvfOutput<T> {
+        self.low  = self.low + self.frequency_coefficient * self.band;
+        self.high = sample - self.low - self.damping * self.band;
+        self.band = self.frequency_coefficient * self.high + self.band;
+
+        SvfOutput {
+            low: self.low,
+            high: self.high,
+            band: self.band,
+        }
+    }
+
+    /// Processes a slice of samples in place, writing back the lowpass output
+    pub fn batch_process_low(&mut self, samples: &mut [T]) {
+        for sample in samples.iter_mut() {
+            *sample = self.process(*sample).low;
+        }
+    }
+
+    /// Processes a slice of samples in place, writing back the highpass output
+    pub fn batch_process_high(&mut self, samples: &mut [T]) {
+        for sample in samples.iter_mut() {
+            *sample = self.process(*sample).high;
+        }
+    }
+
+    /// Processes a slice of samples in place, writing back the bandpass output
+    pub fn batch_process_band(&mut self, samples: &mut [T]) {
+        for sample in samples.iter_mut() {
+            *sample = self.process(*sample).band;
+        }
+    }
+
+    // Helper functions
+    fn compute_frequency_coefficient(cutoff: f64, sample_rate: f64) -> f64 {
+        2.0 * (PI * cutoff / sample_rate).sin()
     }
 }
 
